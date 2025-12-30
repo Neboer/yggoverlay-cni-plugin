@@ -12,7 +12,6 @@ import (
 	"github.com/containernetworking/cni/pkg/types"
 	current "github.com/containernetworking/cni/pkg/types/100"
 	"github.com/containernetworking/cni/pkg/version"
-	"github.com/containernetworking/plugins/pkg/ipam"
 	"github.com/containernetworking/plugins/pkg/netlinksafe"
 	"github.com/containernetworking/plugins/pkg/ns"
 	bv "github.com/containernetworking/plugins/pkg/utils/buildversion"
@@ -220,6 +219,7 @@ func cmdAdd(args *skel.CmdArgs) error {
 			}
 		}
 
+		// return from netns
 		return yggoverlay.ConfigYGGOverlayNetwork(
 			containerInterface,
 			precalculatedContainerYGGAddr,
@@ -241,15 +241,23 @@ func cmdAdd(args *skel.CmdArgs) error {
 
 // cmdDel is called for DELETE requests
 func cmdDel(args *skel.CmdArgs) error {
-	conf, err := parseConfig(args.StdinData)
-	if err != nil {
-		return err
+	// if no netns is given, there is no need to do anything
+	if args.Netns == "" {
+		return nil
+	} else {
+		netns, err := ns.GetNS(args.Netns)
+		// if there is any error, skip the whole deletion process
+		if err != nil {
+			return nil
+		}
+		defer netns.Close()
+
+		// no matter the result of removal, we return nil to not block deletion
+		netns.Do(func(_ ns.NetNS) error {
+			return yggoverlay.RemoveYGGOverlayNetwork()
+		})
+		return nil
 	}
-	_ = conf
-
-	// Do your delete here
-
-	return nil
 }
 
 func main() {
@@ -290,9 +298,8 @@ func main() {
 	}, version.All, bv.BuildString("yggoverlay"))
 }
 
-func cmdCheck(_ *skel.CmdArgs) error {
-	// TODO: implement
-	return fmt.Errorf("not implemented")
+func cmdCheck(args *skel.CmdArgs) error {
+	return nil
 }
 
 // cmdStatus implements the STATUS command, which indicates whether or not
@@ -302,19 +309,5 @@ func cmdCheck(_ *skel.CmdArgs) error {
 // or chained ipam plugin, it should determine their status. If all is well,
 // and an ADD can be successfully processed, return nil
 func cmdStatus(args *skel.CmdArgs) error {
-	conf, err := parseConfig(args.StdinData)
-	if err != nil {
-		return err
-	}
-	_ = conf
-
-	// If this plugins delegates IPAM, ensure that IPAM is also running
-	if err := ipam.ExecStatus(conf.IPAM.Type, args.StdinData); err != nil {
-		return err
-	}
-
-	// TODO: implement STATUS here
-	// e.g. querying an external deamon, or delegating STATUS to an IPAM plugin
-
 	return nil
 }

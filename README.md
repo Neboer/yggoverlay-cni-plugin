@@ -38,7 +38,7 @@ first, create man8br config
             {
               "subnet": "3ffe:ffff:0:01ff::/64",
               "rangeStart": "3ffe:ffff:0:01ff::0010",
-              "rangeEnd": "3ffe:ffff:0:01ff::0020"
+              "rangeEnd": "3ffe:ffff:0:01ff::ffff"
             }
           ]
         ]
