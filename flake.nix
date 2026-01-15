@@ -52,30 +52,13 @@
               done
             '';
           };
-
-          # containerd CRI's CNI config takes ONE bin_dir (a single directory).
-          # So we create a merged directory containing both:
-          #   - the standard reference plugins (bridge, host-local, ...)
-          #   - yggoverlay
-          cni-plugins-with-yggoverlay = pkgs.symlinkJoin {
-            name = "cni-plugins-with-yggoverlay";
-            paths = [
-              pkgs.cni-plugins
-              yggoverlay-cni-plugin
-            ];
-          };
         in
         {
           formatter = nixpkgs.legacyPackages.${system}.nixfmt-tree;
 
           packages = {
             default = yggoverlay-cni-plugin;
-            inherit yggoverlay-cni-plugin cni-plugins-with-yggoverlay;
-          };
-
-          overlays.default = final: prev: {
-            yggoverlay-cni-plugin = self.packages.${system}.yggoverlay-cni-plugin;
-            cni-plugins-with-yggoverlay = self.packages.${system}.cni-plugins-with-yggoverlay;
+            inherit yggoverlay-cni-plugin;
           };
 
           devShells.default = pkgs.mkShell {
@@ -90,6 +73,9 @@
     in
     flake-utils.lib.eachDefaultSystem mkForSystem
     // {
+      overlays.default = final: prev: {
+        yggoverlay-cni-plugin = self.packages.${final.system}.yggoverlay-cni-plugin;
+      };
       nixosModules.default =
         {
           config,
@@ -98,25 +84,109 @@
           ...
         }:
         let
-          cfg = config.virtualisation.containerd.yggoverlayCNI;
-          bundle = self.packages.${pkgs.system}.cni-plugins-with-yggoverlay;
+          cfg = config.virtualisation.containerd.extraCNI;
         in
         {
-          options.virtualisation.containerd.yggoverlayCNI = {
-            enable = lib.mkEnableOption "Install yggoverlay CNI plugin and point containerd's CNI bin_dir at a merged plugin bundle";
-	    
-          };
-
-          config = lib.mkIf cfg.enable {
-            # containerd CRI plugin CNI paths: bin_dir, conf_dir
-            # (bin_dir default is /opt/cni/bin; conf_dir default is /etc/cni/net.d).
-            virtualisation.containerd.settings.plugins."io.containerd.grpc.v1.cri".cni = {
-              bin_dir = "${bundle}/bin";
-              conf_dir = "/etc/cni/net.d";
+          options.virtualisation.containerd.extraCNI = {
+            enable = lib.mkEnableOption "Enable extra CNI settings for containerd";
+            enableStandardCNI = lib.mkOption {
+              type = lib.types.bool;
+              default = true;
+              description = "Enable some standard CNI plugins";
             };
-
-            environment.systemPackages = [ pkgs.nerdctl ];
+            plugins = lib.mkOption {
+              type = lib.types.listOf lib.types.package;
+              default = [ ];
+              example = [ pkgs.yggoverlay-cni-plugin ];
+            };
+            configFiles = lib.mkOption {
+              type = lib.types.attrsOf lib.types.lines;
+              default = {};
+              example = {
+                "30-man8br0.conflist" = ''
+                  {
+                    "cniVersion": "1.0.0",
+                    "name": "man8br",
+                    "plugins": [
+                      {
+                        "type": "bridge",
+                        "bridge": "man8br0",
+                        "isGateway": true,
+                        "ipMasq": true,
+                        "ipMasqBackend": "nftables",
+                        "ipam": {
+                          "type": "host-local",
+                          "routes": [
+                            {
+                              "dst": "0.0.0.0/0"
+                            },
+                            {
+                              "dst": "2000::/3"
+                            }
+                          ],
+                          "ranges": [
+                            [
+                              {
+                                "subnet": "10.4.0.0/24"
+                              }
+                            ],
+                            [
+                              {
+                                "subnet": "3ffe:ffff:0:01ff::/64",
+                                "rangeStart": "3ffe:ffff:0:01ff::0010",
+                                "rangeEnd": "3ffe:ffff:0:01ff::ffff"
+                              }
+                            ]
+                          ]
+                        }
+                      },
+                      {
+                        "type": "yggoverlay"
+                      }
+                    ]
+                  }
+                  	      '';
+              };
+              description = "Config files of yggoverlay CNI plugin.";
+            };
           };
+
+          config =
+            let
+
+              cniPlugins = (lib.optionals cfg.enableStandardCNI [ pkgs.cni-plugins ]) ++ cfg.plugins;
+
+              cniBin = pkgs.symlinkJoin {
+                name = "cni-plugins-bin";
+                paths = map (p: "${p}/bin") cniPlugins;
+              };
+
+              conf = pkgs.symlinkJoin {
+                name = "cni-plugins-conf";
+                paths = lib.mapAttrsToList (
+                  fname: contents:
+                  pkgs.writeTextFile {
+                    name = "${fname}";
+                    text = contents;
+                    destination = "/${fname}";
+                  }
+                ) cfg.configFiles;
+              };
+
+            in
+
+            lib.mkIf cfg.enable {
+              virtualisation.containerd.settings = {
+                plugins."io.containerd.grpc.v1.cri".cni = {
+                  bin_dir = cniBin;
+                  conf_dir = conf;
+                };
+              };
+
+              nixpkgs.overlays = [ self.overlays.default ];
+
+              environment.systemPackages = [ pkgs.nerdctl ];
+            };
         };
     };
 }
