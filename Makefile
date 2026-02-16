@@ -16,6 +16,10 @@ WHITE  := $(shell tput -Txterm setaf 7)
 CYAN   := $(shell tput -Txterm setaf 6)
 RESET  := $(shell tput -Txterm sgr0)
 
+# Build metadata
+VERSION ?= v0.1.1
+LDFLAGS ?= -X github.com/containernetworking/plugins/pkg/utils/buildversion.BuildVersion=$(VERSION)
+
 ## All
 all: ## runs setup, quality checks and builds
 # 	make check-quality
@@ -54,7 +58,7 @@ coverage: ## displays test coverage report in html mode
 ## Build
 build: ## build the go application
 	mkdir -p out/
-	go build -o $(APP_EXECUTABLE)
+	go build -ldflags "$(LDFLAGS)" -o $(APP_EXECUTABLE)
 	@echo "Build passed"
 
 run: ## runs the go binary. use additional options if required.

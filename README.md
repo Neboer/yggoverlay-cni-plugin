@@ -89,3 +89,10 @@ Notes & gotchas
 - Host link name (host0) or bridge name may vary; discover these dynamically from the container's veth pair.
 - Decide and document the deterministic mapping algorithm from hostname -> suffix to avoid address collisions.
 - IPv4 can follow the same pattern (parallel table and rules) if you need dual-stack; IPv6 can be made optional.
+
+## how to build
+
+```bash
+make build
+./out/yggoverlay --version
+```

@@ -3,6 +3,7 @@ package yggoverlay
 import (
 	"fmt"
 	"net"
+	"time"
 
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
@@ -42,8 +43,18 @@ func ConfigYGGOverlayNetwork(
 		Table:     tableID,
 	}
 
-	if err := netlink.RouteAdd(route1); err != nil {
-		return fmt.Errorf("add route1: %w, command is: ip route add %s dev %s table %d", err, ipNet.String(), iface.Attrs().Name, tableID)
+	var lastErr error
+	for range 10 {
+		if err := netlink.RouteAdd(route1); err != nil {
+			lastErr = err
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		lastErr = nil
+		break
+	}
+	if lastErr != nil {
+		return fmt.Errorf("add route1: %w, command is: ip route add %s dev %s table %d", lastErr, ipNet.String(), iface.Attrs().Name, tableID)
 	}
 
 	// 4. Add route: 200::/7 via $GW dev $IFACE table <tableID>
