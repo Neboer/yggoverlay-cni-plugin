@@ -1,6 +1,6 @@
 module github.com/Neboer/yggoverlay-cni-plugin
 
-go 1.25.4
+go 1.26
 
 require (
 	github.com/containernetworking/cni v1.3.0

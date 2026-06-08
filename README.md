@@ -1,12 +1,11 @@
 # yggoverlay-cni-plugin
 
-CNI plugin for containerd to manage yggdrasil overlay network for VPN connection between containers
+CNI plugin for containerd to manage Yggdrasil overlay network for VPN connection between containers.
 
 ## Usage
 
-first, create man8br config
+First, create the bridge CNI config at `/etc/cni/net.d/30-man8br0.conflist`:
 
-/etc/cni/net.d/30-man8br0.conflist
 ```json
 {
   "cniVersion": "1.0.0",
@@ -21,26 +20,16 @@ first, create man8br config
       "ipam": {
         "type": "host-local",
         "routes": [
-          {
-            "dst": "0.0.0.0/0"
-          },
-          {
-            "dst": "2000::/3"
-          }
+          { "dst": "0.0.0.0/0" },
+          { "dst": "2000::/3" }
         ],
         "ranges": [
-          [
-            {
-              "subnet": "10.4.0.0/24"
-            }
-          ],
-          [
-            {
-              "subnet": "3ffe:ffff:0:01ff::/64",
-              "rangeStart": "3ffe:ffff:0:01ff::0010",
-              "rangeEnd": "3ffe:ffff:0:01ff::ffff"
-            }
-          ]
+          [{ "subnet": "10.4.0.0/24" }],
+          [{
+            "subnet": "3ffe:ffff:0:01ff::/64",
+            "rangeStart": "3ffe:ffff:0:01ff::0010",
+            "rangeEnd":   "3ffe:ffff:0:01ff::ffff"
+          }]
         ]
       }
     },
@@ -51,48 +40,63 @@ first, create man8br config
 }
 ```
 
-then, create container via command like this
+The `subnet` in `ipam.ranges` must match the Yggdrasil subnet assigned to this host. Replace `3ffe:ffff:0:01ff::/64` with your actual Yggdrasil subnet.
+
+Then start a container:
 
 ```bash
-nerdctl run -i -t --network=man8br --hostname test-alpine-1 --dns xxx --name test-alpine-1 alpine:latest
+nerdctl run -i -t --network=man8br --hostname test-alpine-1 --dns <dns> --name test-alpine-1 alpine:latest
 ```
 
-and then the container will be added to a bridge and assigned a yggdrasil address.
+The container receives both a regular IPv6 address from the IPAM range and a deterministic Yggdrasil address derived from its hostname.
 
-## What does it do
+## What it does
 
-This CNI-like plugin configures a "ygg" network for containers. It must run after the bridge plugin (so the bridge and container veth exist). IPv4 and IPv6 routing are supported; IPv6 is optional and described below.
+This CNI plugin runs **after** the bridge plugin and configures a Yggdrasil overlay network for the container:
 
-Behavior (high-level)
-- Compute the container's ygg address suffix deterministically from the container name (hostname). Example approach: hash the hostname (e.g. SHA-256 or FNV-1a) and use the low-order bits to form the address suffix (keeps addresses stable across restarts).
-- Talk to the host ygg admin socket to request the assigned ygg address and the ygg subnet for the host.
-- Add the host-side bridge address for the ygg subnet: use the subnet plus ::1 as the bridge/gateway address (e.g. for prefix 300:0:0:1::/64 the bridge addr is 300:0:0:1::1).
-- On the container interface, create a separate routing table (table number 199, named "ygg" conceptually) and add policy routing rules so ygg routes are used with priority.
-- Change container's default IPv6 2000::/3 public internet access route's srcaddr as container's source address, to seperate its ipv6 internet connection from its ygg access.
-- Populate table 199 with:
-  - A directly-connected route for the ygg prefix (e.g. 300:0:0:1::/64) via the host-side link (host0), using normal neighbor/link resolution.
-  - A route that sends traffic to the 200::/7 range via the host ygg gateway (300:0:0:1::1) with the container source address set to the container's ygg address (e.g. 300:0:0:1::100). NAT may be applied at the host if needed, but avoid NAT when possible for performance.
+1. **Bridge address** — assigns `subnet::1/64` to the host bridge as the Yggdrasil gateway.
+2. **Container address** — computes a deterministic address from the container hostname via SHA-256 and adds it to the container veth with `NOPREFIXROUTE`.
+3. **Policy routing** — inside the container, adds a routing table (default ID 199) with:
+   - A direct route for the Yggdrasil subnet via the container veth.
+   - A route for `200::/7` (all Yggdrasil space) via `subnet::1` with the container's Yggdrasil address as source.
+   - An `ip rule` (`priority 100`) to use table 199 for traffic to `200::/7`.
+4. **IPv6 default route fixup** — sets the source address of the container's existing IPv6 default route to its IPAM-assigned IPv6 address, keeping public internet traffic separate from Yggdrasil traffic.
 
-Example ip(8) commands (IPv6 examples)
-- Add host bridge address (run on host):
-  ip -6 addr add 300:0:0:1::1/64 dev br0
-- Add policy rule on container to prefer table 199 (high priority):
-  ip -6 rule add to 300:0:0:1::/64 lookup 199 priority 100
-- Add table 199 routes (inside container or configured via netlink):
-  ip -6 route add 300:0:0:1::/64 dev host0 table 199
-  ip -6 route add 200::/7 via 300:0:0:1::1 src 300:0:0:1::100 table 199
+## Address derivation
 
-Notes & gotchas
-- Must run after the bridge plugin so the bridge device and the container veth are present.
-- Requires CAP_NET_ADMIN and privileges to modify host and container network state.
-- Ensure idempotency: check whether addresses, rules, and routes already exist before adding.
-- Host link name (host0) or bridge name may vary; discover these dynamically from the container's veth pair.
-- Decide and document the deterministic mapping algorithm from hostname -> suffix to avoid address collisions.
-- IPv4 can follow the same pattern (parallel table and rules) if you need dual-stack; IPv6 can be made optional.
+The Yggdrasil address for a container is deterministic: `SHA-256(hostname)` low bits are OR'd with the host's Yggdrasil subnet prefix. The address is stable across container restarts as long as the hostname and the host's Yggdrasil subnet don't change.
 
-## how to build
+```bash
+# Preview the address that would be assigned to a given hostname:
+./out/yggoverlay getsuffix <hostname>
+```
+
+## Optional config fields
+
+```json
+{
+  "type": "yggoverlay",
+  "yggTablePriority": 100,
+  "yggTableID": 199
+}
+```
+
+| Field | Default | Description |
+|---|---|---|
+| `yggTablePriority` | 100 | `ip rule` priority for the Yggdrasil policy routing rule |
+| `yggTableID` | 199 | Routing table ID used for Yggdrasil routes |
+
+## How to build
 
 ```bash
 make build
 ./out/yggoverlay --version
+sudo cp out/yggoverlay /opt/cni/bin/yggoverlay
 ```
+
+## Requirements
+
+- A running Yggdrasil daemon with its admin socket at `/var/run/yggdrasil.sock`.
+- The bridge plugin must appear **before** `yggoverlay` in the conflist.
+- Container must be started with `--hostname` set; the Yggdrasil address is derived from it.
+- `CAP_NET_ADMIN` privileges (standard for CNI plugins).

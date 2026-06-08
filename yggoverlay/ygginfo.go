@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"os"
 
 	"github.com/yggdrasil-network/yggdrasil-go/src/admin"
 )
@@ -35,9 +36,9 @@ func GetHostYGGNetInfo() (*HostYggdrasilNetInfo, error) {
 	}
 	if recv.Status == "error" {
 		if recv.Error != "" {
-			fmt.Println("Admin socket returned an error:", recv.Error)
+			fmt.Fprintln(os.Stderr, "Admin socket returned an error:", recv.Error)
 		} else {
-			fmt.Println("Admin socket returned an error but didn't specify any error text")
+			fmt.Fprintln(os.Stderr, "Admin socket returned an error but didn't specify any error text")
 		}
 		return nil, fmt.Errorf("admin socket returned an error")
 	}
@@ -53,8 +54,11 @@ func GetHostYGGNetInfo() (*HostYggdrasilNetInfo, error) {
 	}
 	ip := net.ParseIP(resp.IPAddress)
 
+	bridgeIP := make(net.IP, 16)
+	copy(bridgeIP, ipSubnet.IP.To16())
+	bridgeIP[15] = 1
 	bridgeSubnetIP := &net.IPNet{
-		IP:   net.ParseIP(fmt.Sprintf("%s1", ipSubnet.IP.String())),
+		IP:   bridgeIP,
 		Mask: ipSubnet.Mask,
 	}
 

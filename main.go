@@ -106,7 +106,7 @@ func cmdAdd(args *skel.CmdArgs) error {
 
 	// START chained plugin code
 	if conf.PrevResult == nil {
-		// current plugin must be called just before an bridge plugin.
+		// current plugin must be called after the bridge plugin.
 		return fmt.Errorf("must be called as chained plugin")
 	}
 
@@ -125,17 +125,45 @@ func cmdAdd(args *skel.CmdArgs) error {
 	if err != nil {
 		return fmt.Errorf("failed to get host YGG network info: %v", err)
 	}
-	brInterfaceInfo := prevResult.Interfaces[0]
-	containerInterfaceInfo := prevResult.Interfaces[2]
-	brInterface, err := netlink.LinkByName(brInterfaceInfo.Name)
-	if err != nil {
-		return fmt.Errorf("failed to lookup %q: %v", brInterfaceInfo.Name, err)
+
+	// Identify container interface (non-empty Sandbox) and bridge (host-side bridge link).
+	// Do not assume ordering — the CNI spec does not guarantee it.
+	var containerInterfaceInfo *current.Interface
+	for i := range prevResult.Interfaces {
+		if prevResult.Interfaces[i].Sandbox != "" {
+			if containerInterfaceInfo != nil {
+				return fmt.Errorf("multiple container interfaces found in prevResult")
+			}
+			containerInterfaceInfo = prevResult.Interfaces[i]
+		}
+	}
+	if containerInterfaceInfo == nil {
+		return fmt.Errorf("no container interface found in prevResult")
+	}
+
+	var brInterface netlink.Link
+	for i := range prevResult.Interfaces {
+		iface := prevResult.Interfaces[i]
+		if iface.Sandbox != "" {
+			continue
+		}
+		link, lookupErr := netlink.LinkByName(iface.Name)
+		if lookupErr != nil {
+			continue
+		}
+		if link.Type() == "bridge" {
+			brInterface = link
+			break
+		}
+	}
+	if brInterface == nil {
+		return fmt.Errorf("no bridge interface found in prevResult")
 	}
 
 	// ensure brInterface has ygg address hostYggInfo.BridgeYGGAddr
 	err = ensureAddr(brInterface, netlink.FAMILY_V6, hostYggInfo.BridgeYGGAddr)
 	if err != nil {
-		return fmt.Errorf("failed to ensure ygg addr on bridge %q: %v", brInterfaceInfo.Name, err)
+		return fmt.Errorf("failed to ensure ygg addr on bridge %q: %v", brInterface.Attrs().Name, err)
 	}
 
 	// configure ygg overlay network on container network namespace
@@ -148,8 +176,7 @@ func cmdAdd(args *skel.CmdArgs) error {
 	// args.Args is like CNI_ARGS=NERDCTL_CNI_DHCP_HOSTNAME=test-nginx-4;IgnoreUnknown=1 we parse it.
 	parsedArgs := map[string]string{}
 	if args.Args != "" {
-		argPairs := strings.Split(args.Args, ";")
-		for _, pair := range argPairs {
+		for pair := range strings.SplitSeq(args.Args, ";") {
 			kv := strings.SplitN(pair, "=", 2)
 			if len(kv) == 2 {
 				parsedArgs[kv[0]] = kv[1]
@@ -244,20 +271,21 @@ func cmdDel(args *skel.CmdArgs) error {
 	// if no netns is given, there is no need to do anything
 	if args.Netns == "" {
 		return nil
-	} else {
-		netns, err := ns.GetNS(args.Netns)
-		// if there is any error, skip the whole deletion process
-		if err != nil {
-			return nil
-		}
-		defer netns.Close()
-
-		// no matter the result of removal, we return nil to not block deletion
-		netns.Do(func(_ ns.NetNS) error {
-			return yggoverlay.RemoveYGGOverlayNetwork()
-		})
+	}
+	netns, err := ns.GetNS(args.Netns)
+	// if there is any error, skip the whole deletion process
+	if err != nil {
 		return nil
 	}
+	defer netns.Close()
+
+	// no matter the result of removal, we return nil to not block deletion
+	if err := netns.Do(func(_ ns.NetNS) error {
+		return yggoverlay.RemoveYGGOverlayNetwork()
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "yggoverlay: failed to remove overlay network: %v\n", err)
+	}
+	return nil
 }
 
 func main() {
@@ -271,7 +299,6 @@ func main() {
 				os.Exit(2)
 			}
 			inputStr := os.Args[2]
-			// return the last 8 characters (or the whole string if shorter)
 			ygginfo, err := yggoverlay.GetHostYGGNetInfo()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "error getting host YGG info: %v\n", err)
@@ -283,8 +310,7 @@ func main() {
 				os.Exit(1)
 			}
 			fmt.Println(resultIP.IP.String())
-			os.Exit(0) // successfully
-			// handled the subcommand, exit before running as a CNI plugin
+			os.Exit(0)
 			return
 		}
 	}
