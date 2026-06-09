@@ -17,7 +17,7 @@ CYAN   := $(shell tput -Txterm setaf 6)
 RESET  := $(shell tput -Txterm sgr0)
 
 # Build metadata
-VERSION ?= v0.2.0
+VERSION ?= v0.3.0
 LDFLAGS ?= -X github.com/containernetworking/plugins/pkg/utils/buildversion.BuildVersion=$(VERSION)
 
 ## All
@@ -65,6 +65,10 @@ run: ## runs the go binary. use additional options if required.
 	make build
 	chmod +x $(APP_EXECUTABLE)
 	$(APP_EXECUTABLE)
+
+test-e2e: build ## end-to-end and stress tests; requires sudo, running containerd and yggdrasil
+	sudo cp $(APP_EXECUTABLE) /opt/cni/bin/yggoverlay
+	sudo BINARY=$(APP_EXECUTABLE) bash scripts/test-e2e.sh
 
 clean: ## cleans binary and other generated files
 	go clean

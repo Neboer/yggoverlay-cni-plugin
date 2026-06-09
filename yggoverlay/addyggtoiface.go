@@ -3,7 +3,7 @@ package yggoverlay
 import (
 	"fmt"
 	"net"
-	"time"
+	"syscall"
 
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
@@ -21,40 +21,36 @@ func ConfigYGGOverlayNetwork(
 		tableID = 199
 	}
 
-	// 2. Add IPv6 address to interface with noprefixroute=1
+	// 2. Add IPv6 address to interface with NOPREFIXROUTE and NODAD.
+	// NODAD: the address is deterministically derived from the hostname and host
+	// subnet, so no duplicate is possible — skipping DAD makes it immediately usable.
 	addrCIDR := yggAddr.String()
 	addr, err := netlink.ParseAddr(addrCIDR)
 	if err != nil {
 		return fmt.Errorf("invalid addr %s: %w", addrCIDR, err)
 	}
-	addr.Flags |= unix.IFA_F_NOPREFIXROUTE
+	addr.Flags |= unix.IFA_F_NOPREFIXROUTE | unix.IFA_F_NODAD
 
-	if err := netlink.AddrAdd(iface, addr); err != nil {
+	if err := netlink.AddrAdd(iface, addr); err != nil && err != syscall.EEXIST {
 		return fmt.Errorf("failed to add addr %s: %w", addrCIDR, err)
 	}
 
 	// 3. Add route: $YGG_NET dev $IFACE table <tableID>
-	ipNet := addr.IPNet
+	// Use the network address (host bits cleared) as the route destination.
+	_, yggNet, err := net.ParseCIDR(yggAddr.String())
+	if err != nil {
+		return fmt.Errorf("failed to parse ygg network: %w", err)
+	}
 
 	route1 := &netlink.Route{
 		LinkIndex: iface.Attrs().Index,
-		Dst:       ipNet,
+		Dst:       yggNet,
 		Src:       yggAddr.IP,
 		Table:     tableID,
 	}
 
-	var lastErr error
-	for range 10 {
-		if err := netlink.RouteAdd(route1); err != nil {
-			lastErr = err
-			time.Sleep(100 * time.Millisecond)
-			continue
-		}
-		lastErr = nil
-		break
-	}
-	if lastErr != nil {
-		return fmt.Errorf("add route1: %w, command is: ip route add %s dev %s table %d", lastErr, ipNet.String(), iface.Attrs().Name, tableID)
+	if err := netlink.RouteAdd(route1); err != nil && err != syscall.EEXIST {
+		return fmt.Errorf("add route1: %w, command is: ip route add %s dev %s table %d", err, yggNet.String(), iface.Attrs().Name, tableID)
 	}
 
 	// 4. Add route: 200::/7 via $GW dev $IFACE table <tableID>
@@ -68,7 +64,7 @@ func ConfigYGGOverlayNetwork(
 		Table:     tableID,
 	}
 
-	if err := netlink.RouteAdd(route2); err != nil {
+	if err := netlink.RouteAdd(route2); err != nil && err != syscall.EEXIST {
 		return fmt.Errorf("add route2: %w, command is: ip route add 200::/7 via %s dev %s table %d", err, gwAddr.IP.String(), iface.Attrs().Name, tableID)
 	}
 
@@ -78,7 +74,7 @@ func ConfigYGGOverlayNetwork(
 	rule.Table = tableID
 	rule.Priority = tablePriority
 
-	if err := netlink.RuleAdd(rule); err != nil {
+	if err := netlink.RuleAdd(rule); err != nil && err != syscall.EEXIST {
 		return fmt.Errorf("add rule: %w", err)
 	}
 

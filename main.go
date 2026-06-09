@@ -183,9 +183,14 @@ func cmdAdd(args *skel.CmdArgs) error {
 			}
 		}
 	}
+	// Prefer nerdctl's explicit hostname arg; fall back to K8S_POD_NAMESPACE for
+	// podman/Kubernetes environments where NERDCTL_CNI_DHCP_HOSTNAME is absent.
 	containerHostName, ok := parsedArgs["NERDCTL_CNI_DHCP_HOSTNAME"]
 	if !ok || containerHostName == "" {
-		return fmt.Errorf("failed to get container ID from CNI_ARGS NERDCTL_CNI_DHCP_HOSTNAME, hostname must be set")
+		containerHostName, ok = parsedArgs["K8S_POD_NAMESPACE"]
+	}
+	if !ok || containerHostName == "" {
+		return fmt.Errorf("no hostname in CNI_ARGS: set --hostname (nerdctl) or ensure K8S_POD_NAMESPACE is present (podman/k8s)")
 	}
 
 	precalculatedContainerYGGAddr, err := yggoverlay.EncodeContainerNameToYGGAddr(hostYggInfo.YGGSubnetAddr, containerHostName)
@@ -216,12 +221,7 @@ func cmdAdd(args *skel.CmdArgs) error {
 			}
 		}
 
-		if containerIPv6 != nil {
-			// If no gateway is set, error out
-			if containerIPv6.Gateway == nil {
-				return fmt.Errorf("IPv6 route gateway must be set")
-			}
-
+		if containerIPv6 != nil && containerIPv6.Gateway != nil {
 			// change this route, set its src = containerIPv6.Address.IP
 			routes, err := netlink.RouteList(containerInterface, netlink.FAMILY_V6)
 			if err != nil && err != syscall.ENOENT {
