@@ -17,7 +17,7 @@ CYAN   := $(shell tput -Txterm setaf 6)
 RESET  := $(shell tput -Txterm sgr0)
 
 # Build metadata
-VERSION ?= v0.3.0
+VERSION ?= v0.3.1
 LDFLAGS ?= -X github.com/containernetworking/plugins/pkg/utils/buildversion.BuildVersion=$(VERSION)
 
 ## All
